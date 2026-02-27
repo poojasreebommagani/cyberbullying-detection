@@ -18,7 +18,6 @@ download_nltk()
 
 # --- 2. DATASET (Problem: Cyberbullying) ---
 @st.cache_data
-    
 def load_data():
     # Load dataset from a local CSV file provided by the user
     # Expected columns: tweet_text, cyberbullying_type
@@ -30,8 +29,8 @@ def load_data():
     df['label'] = df['cyberbullying_type'].apply(
         lambda x: 0 if str(x).lower() == 'not_cyberbullying' else 1
     )
-    # sample to keep training fast (previous version used 1000 rows)
-    return df[['tweet', 'label']].sample(1000, random_state=42)
+    # Use more data for better training (previously 1000, now 5000)
+    return df[['tweet', 'label']].sample(min(5000, len(df)), random_state=42)
 
 # --- 3. PREPROCESSING ---
 def preprocess_text(text):
@@ -43,32 +42,81 @@ def preprocess_text(text):
     tokens = [lemmatizer.lemmatize(w) for w in text.split() if w not in stop_words]
     return " ".join(tokens)
 
-# --- 4. MODEL IMPLEMENTATION (Option A) ---
-df = load_data()
-df['clean_text'] = df['tweet'].apply(preprocess_text)
+# --- 4. MODEL TRAINING (with caching) ---
+@st.cache_resource
+def train_model():
+    """Load data, preprocess, and train the cyberbullying detection model."""
+    try:
+        df = load_data()
+        
+        # Validate data
+        if df.empty:
+            st.error("Error: Dataset is empty!")
+            return None, None, None
+        
+        if df['label'].nunique() < 2:
+            st.error("Error: Not enough classes in labels!")
+            return None, None, None
+        
+        # Preprocess text
+        df['clean_text'] = df['tweet'].apply(preprocess_text)
+        
+        # Vectorize with better parameters
+        vectorizer = TfidfVectorizer(max_features=1500, min_df=2, max_df=0.8)
+        X = vectorizer.fit_transform(df['clean_text'])
+        y = df['label']
+        
+        # Train with better parameters
+        model = LogisticRegression(max_iter=500, random_state=42, class_weight='balanced')
+        model.fit(X, y)
+        
+        # Calculate training accuracy
+        train_accuracy = model.score(X, y)
+        
+        return model, vectorizer, train_accuracy
+    
+    except Exception as e:
+        st.error(f"Error during model training: {str(e)}")
+        return None, None, None
 
-vectorizer = TfidfVectorizer(max_features=1500)
-X = vectorizer.fit_transform(df['clean_text'])
-y = df['label']
-
-model = LogisticRegression()
-model.fit(X, y)
+# Train and get model
+model_result = train_model()
+if model_result[0] is not None:
+    model, vectorizer, train_accuracy = model_result
+else:
+    model, vectorizer, train_accuracy = None, None, 0
 
 # --- 5. STREAMLIT INTERFACE ---
 st.title("🛡️ Cyberbullying Detection App")
 st.write("Enter text below to check if it contains harmful or bullying language.")
 
-user_input = st.text_area("Input Text:", placeholder="Type a comment here...")
-
-if st.button("Analyze"):
-    if user_input:
-        processed = preprocess_text(user_input)
-        vec = vectorizer.transform([processed])
-        prediction = model.predict(vec)
-        
-        if prediction[0] == 1:
-            st.error("🚨 Result: Potential Cyberbullying Detected")
+# Show model status
+if model is not None and vectorizer is not None:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Model Status", "✅ Ready")
+    with col2:
+        st.metric("Training Accuracy", f"{train_accuracy:.2%}")
+    
+    st.divider()
+    
+    user_input = st.text_area("Input Text:", placeholder="Type a comment here...")
+    
+    if st.button("Analyze", type="primary"):
+        if user_input:
+            try:
+                processed = preprocess_text(user_input)
+                vec = vectorizer.transform([processed])
+                prediction = model.predict(vec)
+                confidence = model.predict_proba(vec)[0]
+                
+                if prediction[0] == 1:
+                    st.error(f"🚨 Result: Potential Cyberbullying Detected (Confidence: {confidence[1]:.2%})")
+                else:
+                    st.success(f"✅ Result: Clean / Safe Content (Confidence: {confidence[0]:.2%})")
+            except Exception as e:
+                st.error(f"Error during prediction: {str(e)}")
         else:
-            st.success("✅ Result: Clean / Safe Content")
-    else:
-        st.warning("Please enter text first.")
+            st.warning("Please enter text first.")
+else:
+    st.error("❌ Model failed to train. Please check the dataset and try refreshing the page.")
