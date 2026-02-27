@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import nltk
+import os
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -20,9 +21,18 @@ download_nltk()
 # --- 2. DATASET (Problem: Cyberbullying) ---
 @st.cache_data
 def load_data():
-    # Load dataset from a local CSV file provided by the user
+    # Load dataset from a local CSV file; use path relative to this script
     # Expected columns: tweet_text, cyberbullying_type
-    path = "cyberbullying_tweets.csv"
+    base = os.path.dirname(__file__)
+    path = os.path.join(base, "cyberbullying_tweets.csv")
+    if not os.path.exists(path):
+        # try working directory as fallback (heroku, streamlit cloud, etc.)
+        alt = "cyberbullying_tweets.csv"
+        if os.path.exists(alt):
+            path = alt
+        else:
+            st.error(f"Dataset not found! Looked for '{path}' and '{alt}'.")
+            return pd.DataFrame(columns=["tweet", "label"])
     df = pd.read_csv(path)
     # map the text & label columns to a common format
     df = df.rename(columns={"tweet_text": "tweet"})
