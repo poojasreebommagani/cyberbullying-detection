@@ -21,7 +21,7 @@ download_nltk()
 def load_data():
     # Load dataset from a local CSV file provided by the user
     # Expected columns: tweet_text, cyberbullying_type
-    path = r"C:\cyberbullyingapp\cyberbullying_tweets.csv"
+    path = "cyberbullying_tweets.csv"
     df = pd.read_csv(path)
     # map the text & label columns to a common format
     df = df.rename(columns={"tweet_text": "tweet"})
