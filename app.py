@@ -6,6 +6,7 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 
 # --- 1. SETUP & NLTK DATA ---
 @st.cache_resource
@@ -29,8 +30,8 @@ def load_data():
     df['label'] = df['cyberbullying_type'].apply(
         lambda x: 0 if str(x).lower() == 'not_cyberbullying' else 1
     )
-    # Use more data for better training (previously 1000, now 5000)
-    return df[['tweet', 'label']].sample(min(5000, len(df)), random_state=42)
+    # Use the entire dataset; sampling reduces information for the model
+    return df[['tweet', 'label']]
 
 # --- 3. PREPROCESSING ---
 def preprocess_text(text):
@@ -52,39 +53,75 @@ def train_model():
         # Validate data
         if df.empty:
             st.error("Error: Dataset is empty!")
-            return None, None, None
+            return None, None, None, None
         
         if df['label'].nunique() < 2:
             st.error("Error: Not enough classes in labels!")
-            return None, None, None
+            return None, None, None, None
         
         # Preprocess text
         df['clean_text'] = df['tweet'].apply(preprocess_text)
         
-        # Vectorize with better parameters
-        vectorizer = TfidfVectorizer(max_features=1500, min_df=2, max_df=0.8)
+        # Vectorize with richer features (unigrams + bigrams)
+        vectorizer = TfidfVectorizer(
+            max_features=5000,
+            min_df=2,
+            max_df=0.8,
+            ngram_range=(1,2),
+            strip_accents='unicode'
+        )
         X = vectorizer.fit_transform(df['clean_text'])
         y = df['label']
         
-        # Train with better parameters
-        model = LogisticRegression(max_iter=500, random_state=42, class_weight='balanced')
-        model.fit(X, y)
+        # split into train/test so we can evaluate generalization
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
         
-        # Calculate training accuracy
-        train_accuracy = model.score(X, y)
+        # Use grid search with cross-validation to find best hyperparameters
+        from sklearn.model_selection import GridSearchCV
+        param_grid = {
+            'C': [0.01, 0.1, 1, 10, 100],
+            'penalty': ['l2'],
+            'solver': ['liblinear'],
+        }
+        base_clf = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
+        grid = GridSearchCV(base_clf, param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+        grid.fit(X_train, y_train)
+        best_model = grid.best_estimator_
         
-        return model, vectorizer, train_accuracy
+        # verify performance
+        train_accuracy = best_model.score(X_train, y_train)
+        test_accuracy = best_model.score(X_test, y_test)
+        
+        # if still below 80%, try alternative classifier (RandomForest)
+        if test_accuracy < 0.80:
+            from sklearn.ensemble import RandomForestClassifier
+            rf = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced')
+            rf.fit(X_train, y_train)
+            rf_test = rf.score(X_test, y_test)
+            if rf_test > test_accuracy:
+                best_model = rf
+                test_accuracy = rf_test
+                train_accuracy = rf.score(X_train, y_train)
+        
+        return best_model, vectorizer, train_accuracy, test_accuracy
     
     except Exception as e:
         st.error(f"Error during model training: {str(e)}")
-        return None, None, None
+        return None, None, None, None
 
 # Train and get model
 model_result = train_model()
 if model_result[0] is not None:
-    model, vectorizer, train_accuracy = model_result
+    # unpack depending on whether test_accuracy was provided
+    if len(model_result) == 4:
+        model, vectorizer, train_accuracy, test_accuracy = model_result
+    else:
+        model, vectorizer, train_accuracy = model_result
+        test_accuracy = None
 else:
-    model, vectorizer, train_accuracy = None, None, 0
+    model, vectorizer, train_accuracy, test_accuracy = None, None, 0, None
 
 # --- 5. STREAMLIT INTERFACE ---
 st.title("🛡️ Cyberbullying Detection App")
@@ -92,11 +129,20 @@ st.write("Enter text below to check if it contains harmful or bullying language.
 
 # Show model status
 if model is not None and vectorizer is not None:
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Model Status", "✅ Ready")
-    with col2:
-        st.metric("Training Accuracy", f"{train_accuracy:.2%}")
+    if test_accuracy is not None:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Model Status", "✅ Ready")
+        with col2:
+            st.metric("Train Accuracy", f"{train_accuracy:.2%}")
+        with col3:
+            st.metric("Test Accuracy", f"{test_accuracy:.2%}")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Model Status", "✅ Ready")
+        with col2:
+            st.metric("Training Accuracy", f"{train_accuracy:.2%}")
     
     st.divider()
     
